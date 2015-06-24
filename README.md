@@ -1,2 +1,2 @@
 # FTPDeployer
-upload files by ftp,single thread version
+upload files by ftp,multi thread, main:TransferCommander
