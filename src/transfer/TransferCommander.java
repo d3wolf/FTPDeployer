@@ -66,7 +66,11 @@ public class TransferCommander {
 		System.out.println(sb);
 	}
 	
-	public static void main(String[] args) throws Exception {
+	private static Scanner getScanner() {
+		return new Scanner(System.in);
+	}
+	
+	public static void main(String[] args) throws IOException{
 		TransferCommander command = new TransferCommander("/configs");
 
 		for (int i = 0; i < command.propertyFiles.size(); i++) {
@@ -75,9 +79,9 @@ public class TransferCommander {
 
 		boolean validIndex = false;
 		do {
-			Scanner sc2 = new Scanner(System.in);
+		//	sc2 = new Scanner(System.in);
 			System.out.println("input an index above for transfer:");
-			String indexStr = sc2.nextLine();
+			String indexStr = getScanner().nextLine();
 
 			try {
 				int index = Integer.parseInt(indexStr);
@@ -86,8 +90,15 @@ public class TransferCommander {
 					
 					File file = command.propertyFiles.get(index);
 					Properties property = command.loadProperties(file);
+					
+					long begin = System.currentTimeMillis();
+					
 					FTPTransfer.transferByProperty(property);
 					
+					long endUpload = System.currentTimeMillis();
+	
+					double totalTime = (double) (endUpload - begin) / 1000;
+					System.out.println("总共耗时: " + totalTime);
 				} else if (index == -1) {
 					validIndex = true;
 					break;
@@ -96,8 +107,7 @@ public class TransferCommander {
 				}
 			} catch (NumberFormatException e) {
 				System.out.println("invalid index format.");
-			}
+			} 
 		} while (!validIndex);
 	}
-
 }

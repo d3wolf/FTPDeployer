@@ -1,24 +1,23 @@
 package transfer;
 
 import java.io.File;
-import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.SocketException;
 import java.util.Arrays;
 import java.util.Calendar;
 import java.util.List;
 import java.util.Properties;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 import org.apache.commons.net.ftp.FTPClient;
 import org.apache.commons.net.ftp.FTPFile;
-import org.apache.commons.net.ftp.FTPReply;
 import org.apache.log4j.Logger;
 
 public class FTPTransfer {
 
-	private static final Logger logger = Logger.getLogger(FTPTransfer.class);
-
-	private FTPClient ftp;
+	public static final Logger logger = Logger.getLogger(FTPTransfer.class);
 
 	private String host;
 	private int port;
@@ -33,6 +32,10 @@ public class FTPTransfer {
 	private static String encode;
 
 	private int count;
+
+	private TransCounter counter;
+	
+	private ExecutorService pool;
 
 	@SuppressWarnings("unused")
 	private FTPTransfer() {
@@ -49,68 +52,52 @@ public class FTPTransfer {
 		this.ignoreFolders = Arrays.asList(property.getProperty("IGNORE_FOLDER").split(","));
 		this.ignoreFiles = Arrays.asList(property.getProperty("IGNORE_FILE").split(","));
 		encode = property.getProperty("LOCAL_FILE_NAME_ENCODE");
+		count = 0;
+		counter = new TransCounter();
+		
+		pool = Executors.newFixedThreadPool(5);
 
 	}
 
-	/**
-	 * 
-	 * @param path
-	 *            上传到ftp服务器哪个路径下
-	 * @param addr
-	 *            地址
-	 * @param port
-	 *            端口号
-	 * @param username
-	 *            用户名
-	 * @param password
-	 *            密码
-	 * @return
-	 * @throws Exception
-	 */
-	private boolean connect(String path, String addr, int port, String username, String password) throws Exception {
-		boolean result = false;
-		ftp = new FTPClient();
-		int reply;
+	public static FTPClient getFtp(String path, String addr, int port, String username, String password) throws SocketException, IOException {
+		FTPClient ftp = new FTPClient();
 		ftp.connect(addr, port);
 		ftp.login(username, password);
 		ftp.setDataTimeout(1000 * 60 * 60);
 		ftp.setFileType(FTPClient.BINARY_FILE_TYPE);
-		reply = ftp.getReplyCode();
-		if (!FTPReply.isPositiveCompletion(reply)) {
-			ftp.disconnect();
-			return result;
-		}
+	
 		ftp.changeWorkingDirectory(path);
-		result = true;
-		return result;
+		return ftp;
 	}
 
 	/**
+	 * 创建多个FTPClient对象来上传
 	 * 
+	 * @param ftp
 	 * @param file
-	 *            上传的文件或文件夹
 	 * @throws Exception
 	 */
-	private void upload(File file) throws Exception {
+	private void upload(String workingDir, String host, int port, String userName, String password, File file) throws Exception {
 		if (file.isDirectory()) {
+
+			logger.debug("current dir:" + workingDir);
+			
+			FTPClient ftp = getFtp(workingDir, host, port, userName, password);
 			ftp.makeDirectory(file.getName());
 			ftp.changeWorkingDirectory(file.getName());
-
-			logger.debug("current dir:" + ftp.printWorkingDirectory());
+			
+			ftp.disconnect();
+			
+			workingDir = workingDir + File.separator + file.getName();
 
 			File[] files = file.listFiles();
 			for (int i = 0; i < files.length; i++) {
 				File childFile = files[i];
-				if (childFile.isDirectory()) {
-					if (ignore(childFile)) {
-						logger.debug("ignore dir: " + childFile.getPath());
-						continue;
-					} else {
-						upload(childFile);
-						ftp.changeToParentDirectory();
-					}
+				if (ignore(childFile)) {
+					logger.info("ignore dir: " + childFile.getPath());
+					continue;
 				} else {
-					upload(childFile);
+					upload(workingDir, host, port, userName, password, childFile);
 				}
 			}
 		} else {
@@ -118,14 +105,21 @@ public class FTPTransfer {
 				logger.debug("ignore file: " + file.getPath());
 				return;
 			}
-			if (needTransferByModTime(file)) {
-				FileInputStream input = new FileInputStream(file);
-				logger.info("upload file:" + ftp.printWorkingDirectory() + "/" + file.getName());
-				ftp.storeFile(encodedfileNameToFtp(file.getName()), input);
-				input.close();
-				count++;
-			}
+
+			MultiTransfer run = new MultiTransfer(workingDir, host, port, userName, password, file);
+			
+			run.setCounter(counter);
+			
+			Thread thread = new Thread(run);
+			pool.execute(thread);
+
+			// MultiTransferWithReturn run = new MultiTransferWithReturn(workingDir, host, port, userName, password, file);
+			// if((Boolean)pool.submit(run).get()){ count++; }
+
+			count++;
+		
 		}
+
 	}
 
 	/**
@@ -160,7 +154,7 @@ public class FTPTransfer {
 		}
 	}
 
-	private boolean needTransferByModTime(File file) throws IOException {
+	public static boolean needTransferByModTime(FTPClient ftp, File file) throws IOException {
 
 		boolean needTransfer = true;
 		FTPFile[] ftpFiles = ftp.listFiles();
@@ -220,43 +214,24 @@ public class FTPTransfer {
 		return properties;
 	}
 
-	@SuppressWarnings("unused")
-	private void printTransferInfo() {
-		StringBuffer sb = new StringBuffer();
-		sb.append("transfer info:\n");
-		sb.append(" host:" + this.host + "\n");
-		sb.append(" transfer path: " + this.transferPath);
-
-		System.out.println(sb);
-	}
-
 	public static void transferByProperty(Properties property) throws IOException {
 		FTPTransfer t = new FTPTransfer(property);
 
 		try {
 			logger.info("transfer from [" + t.transferPath + "] to [" + t.host + "]");
-			t.connect("", t.host, t.port, t.userName, t.password);
 			File file = new File(t.transferPath);
-			t.upload(file);
+			t.upload("", t.host, t.port, t.userName, t.password, file);
 		} catch (Exception e) {
 			e.printStackTrace();
 		} finally {
-			t.ftp.disconnect();
+			t.pool.shutdown();
 
-			logger.info("传输总数: " + t.count);
+		//	logger.info("传输总数: " + t.counter.getCount());
 		}
 
 	}
 
 	public static void main(String[] args) throws Exception {
-		Properties property = getFTPProperties("transfer/ftp.properties");
-		FTPTransfer t = new FTPTransfer(property);
-		t.connect("", t.host, t.port, t.userName, t.password);
-		File file = new File(t.transferPath);
-		t.upload(file);
 
-		t.ftp.disconnect();
-
-		System.out.println("传输总数: " + t.count);
 	}
 }
